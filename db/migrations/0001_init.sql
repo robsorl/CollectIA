@@ -8,6 +8,7 @@ create extension if not exists citext;
 -- Référentiel carte (miroir PokéTCG API)
 create table sets (
   id text primary key,
+  game_id text references games(id) not null default 'pokemon',
   name text not null,
   series text not null,
   total_cards int,
@@ -137,6 +138,14 @@ create or replace trigger collection_items_changed
 after insert or update or delete on collection_items
 for each statement execute function refresh_trade_matches();
 
+-- Jeux (verticaux TCG) : Pokémon en MVP, extension Magic / Yu-Gi-Oh! / One Piece… (cf. spec §1, Phase 4)
+create table games (
+  id text primary key,
+  name text not null,
+  enabled boolean not null default false
+);
+insert into games (id, name, enabled) values ('pokemon', 'Pokémon JCC', true);
+
 -- ---------------------------------------------------------------- RLS
 alter table profiles enable row level security;
 alter table collection_items enable row level security;
@@ -148,7 +157,9 @@ alter table trade_feedback enable row level security;
 
 alter table sets enable row level security;
 alter table cards enable row level security;
+alter table games enable row level security;
 
+create policy "games readable" on games for select using (true);
 create policy "sets readable" on sets for select using (true);
 create policy "cards readable" on cards for select using (true);
 

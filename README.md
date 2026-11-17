@@ -56,3 +56,7 @@ node ocr-prototype.mjs https://images.pokemontcg.io/swsh1/44_hires.png
 
 Sprints détaillés dans la spec (§8) : S1 auth + sync catalogue → S2 collection →
 S3 scan/thématiques → S4 matching/échanges → S5 landing SEO → S6 bêta.
+
+**Vision long terme** (spec §1 et §8, Phase 4) : plateforme de collection &
+marketplace TCG à la Delcampe — démarrage Pokémon, puis duplication du modèle
+sur Magic, Yu-Gi-Oh!, One Piece, Lorcana (schéma déjà préparé : table `games`).
