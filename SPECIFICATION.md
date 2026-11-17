@@ -14,6 +14,15 @@
 - Mettre en relation les collectionneurs sur leurs doublons/compléments (**matching d'échange**), les échanges se finalisant hors plateforme en MVP.
 - Préparer la structure de données pour une future marketplace (paiement Stripe Connect).
 
+### Positionnement long terme — référence Delcampe
+
+- Le produit final est une **plateforme de collection & marketplace spécialisée TCG**, à la manière de [Delcampe](https://www.delcampe.net/fr/collections/) pour les univers de collection : catalogue par jeu, fiches publiques, vitrines de collectionneurs, transactions (enchères / prix fixe).
+- **CollectIA démarre sur le seul univers Pokémon**, puis duplique le modèle sur d'autres TCG : Magic: The Gathering, Yu-Gi-Oh!, One Piece, Disney Lorcana, Digimon… (chaque jeu = son catalogue, sa communauté, son matching).
+- Le nom "CollectIA" est générique à dessein : aucun renommage nécessaire.
+- Hors périmètre assumé : les catégories non-TCG de Delcampe (timbres, cartes postales, monnaies…) — le ciblage reste le TCG.
+- Conséquences appliquées dès la base de données (coût marginal maintenant, refonte coûteuse après coup) : table `games` (verticaux TCG) + `sets.game_id` + tableau de bord par jeu ; le catalogue se synchronise par jeu (Pokemon JP uniquement en MVP, flag `enabled`).
+- SEO multi-univers : les pages /jeu/extension/carte deviennent des points d'entrée d'acquisition organique pour chaque nouveau jeu ajouté.
+
 ### Objectifs mesurables (6 mois post-lancement)
 - 1 000 comptes inscrits, 30 % avec ≥ 1 collection importée.
 - Taux de rétention mensuel ≥ 25 %.
@@ -336,6 +345,12 @@ GROUP BY a.user_id, b.user_id;
 
 ### Après MVP (Phase 2)
 Freemium (300 cartes gratuites / illimité 4 €/mois) → marketplace avec Stripe Connect → notifications → reconnaissance IA des cartes → applications mobiles.
+
+### Phase 4 — duplication multi-TCG (référence Delcampe)
+1. Magic: The Gathering (API Scryfall, gratuite, très complète), puis Yu-Gi-Oh! (YGOPRODeck), One Piece, Disney Lorcana…
+2. Adapter par jeu : schéma de référence (sets/cartes), source de prix, OCR (le layout des cartes diffère : numéro, coin, codes couleur), traductions.
+3. Le cœur produit (collection/doublons/matching/échange) est **réutilisé tel quel** ; seuls le référentiel et les spécificités d'import changent.
+4. Accueil côté catégorie à la Delcampe : page par jeu avec décompte d'objets et compteur de collectionneurs.
 
 ---
 
