@@ -288,7 +288,7 @@ CREATE INDEX idx_wanted ON collection_items (user_id)
   WHERE quantity_wanted > quantity_owned;
 ```
 
-**Matching** (vue matérialisée, rafraîchie toutes les 15 min) :
+**Matching** (vue matérialisée, rafraîchie par job planifié pg_cron/Vercel Cron — jamais dans un trigger : `REFRESH ... CONCURRENTLY` est interdit en transaction) :
 ```sql
 CREATE MATERIALIZED VIEW trade_matches AS
 SELECT a.user_id AS me, b.user_id AS other, COUNT(*) AS score
@@ -332,7 +332,7 @@ GROUP BY a.user_id, b.user_id;
 
 ### Sécurité & RLS (extraits)
 - `collection_items` : SELECT/UPDATE seulement si `user_id = auth.uid()`.
-- `trades` : SELECT si participant ; INSERT si `auth.uid() = from_user` ; UPDATE de statut si destinataire (accepter/refuser) ou auteur (annuler).
+- `trades` : SELECT si participant ; INSERT si `auth.uid() = from_user` ; UPDATE filtré en `USING` + `WITH CHECK` et verrouillé par un trigger de machine à états (destinataire : accepter/refuser un `proposed` ; auteur : annuler ; participants : clôturer un `accepted` ; états terminaux irréversibles — cf. `docs/DATABASE.md`).
 - `profiles` : UPDATE soi-même ; SELECT si `visibility != 'private'` ou participant à un échange.
 
 ---
