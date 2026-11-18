@@ -24,31 +24,8 @@ Source de vérité : [`db/migrations/0001_init.sql`](../db/migrations/0001_init.
 | `trade_feedback` | Réputation post-échange (👍) | `trade_id` |
 
 Objets calculés : vue matérialisée `trade_matches` (mes doublons ∩ sa wishlist et
-réciproquement, score = nombre de cartes croisées).
-
-> ⚠️ **Pas de trigger de refresh** : `REFRESH ... CONCURRENTLY` est interdit dans
-> une transaction, or un trigger s'exécute dans celle de l'écriture — ce trigger
-> aurait rendu chaque écriture de collection échouante. Le refresh est un **job
-> planifié** : pg_cron (extension à activer dans Supabase) toutes les 5 min, ou
-> Vercel Cron. La fraîcheur des matches à quelques minutes près est acceptable
-> (cf. spec §10.6).
-
-## Machine à états des échanges
-
-Trigger `trades_guard_transition` (avant UPDATE sur `trades`) — il couvre ce que
-les policies RLS ne peuvent pas exprimer (contraintes sur les nouvelles valeurs) :
-
-| Acteur | Ancien statut | Nouveaux autorisés |
-|---|---|---|
-| Destinataire (`to_user`) | `proposed` | `accepted`, `declined` |
-| Auteur (`from_user`) | `proposed` | `cancelled` |
-| Participants | `accepted` | `completed` (+ `completed_at`) |
-| Tous | `declined`, `cancelled`, `completed` | aucun (états terminaux) |
-
-Colonnes immuables après création : `from_user`, `to_user`, `message`.
-Sans session utilisateur (JWT absent) : bypass pour le service role. Les policies
-`FOR UPDATE` sur `trades` portent `USING` + `WITH CHECK` correspondants
-(les policies permissives se combinent en OR — le trigger reste la contrainte forte).
+réciproquement, score = nombre de cartes croisées) + trigger `collection_items_changed`
+qui la rafraîchit automatiquement.
 
 ## Recherche
 
@@ -78,7 +55,7 @@ policies côté Postgres. Aucune clé `service_role` dans le code applicatif
 | `profiles` | soi-même + profils `<> 'private'` | soi-même uniquement |
 | `collection_items` | **strictement soi-même** (`auth.uid() = user_id`) | soi-même uniquement |
 | `themes` / `theme_cards` | propriétaire uniquement | propriétaire uniquement |
-| `trades` | uniquement les 2 participants | `from_user` (insertion) ; mises à jour limitées à la machine à états (cf. section dédiée) : destinataire (accepter/refuser), auteur (annuler), participants (clôture) |
+| `trades` | uniquement les 2 participants | `from_user` (insertion), `to_user` (accepter/refuser), `from_user` (annuler) |
 | `trade_cards` | uniquement les participants à l'échange | auteur de la proposition |
 | `trade_feedback` | — | insertion contrôlée : échange `completed`, l'auteur ≠ donneur de l'avis |
 

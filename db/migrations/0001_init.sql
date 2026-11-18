@@ -123,60 +123,6 @@ create table trade_feedback (
   created_at timestamptz default now()
 );
 
--- Machine à états des échanges (transitions autorisées uniquement) :
---   proposed → accepted | declined (destinataire) ; proposed → cancelled (auteur) ;
---   accepted → completed (participants) ; états terminaux irréversibles.
--- Les policies RLS filtrent QUI peut écrire ; ce trigger garantit QUOI peut changer
--- (statut seul + transition valide). Sans JWT (maintenance/service role) : bypass.
-create or replace function trades_guard_transition()
-returns trigger
-language plpgsql
-security definer
-set search_path = public, auth
-as $$
-declare
-  actor uuid;
-begin
-  actor := auth.uid();
-  if actor is null then
-    return new;
-  end if;
-
-  if new.from_user<> old.from_user or new.to_user <> old.to_user
-     or coalesce(new.message, '') <> coalesce(old.message, '') then
-    raise exception 'trades : seuls le statut et completed_at sont modifiables';
-  end if;
-
-  if new.status = old.status then
-    return new;
-  end if;
-
-  if old.status = 'proposed' and new.status in ('accepted', 'declined')
-     and actor = new.to_user then
-    null;  -- destinataire décide
-  elsif old.status = 'proposed' and new.status = 'cancelled'
-     and actor = new.from_user then
-    null;  -- auteur annule
-  elsif old.status = 'accepted' and new.status = 'completed'
-     and actor in (new.from_user, new.to_user) then
-    null;  -- participants clôturent
-  else
-    raise exception 'trades : transition % -> % interdite pour cet acteur', old.status, new.status;
-  end if;
-
-  if new.status = 'completed' then
-    new.completed_at := coalesce(new.completed_at, now());
-  else
-    new.completed_at := null;
-  end if;
-  return new;
-end;
-$$;
-
-create trigger trades_transition_guard
-before update on trades
-for each row execute function trades_guard_transition();
-
 -- Matching : mes doublons ∩ sa wishlist + ses doublons ∩ ma wishlist
 create materialized view trade_matches as
 select a.user_id as me, b.user_id as other, count(*) as score
@@ -196,16 +142,21 @@ group by a.user_id, b.user_id;
 create unique index trade_matches_unique on trade_matches(me, other);
 create index trade_matches_me_idx on trade_matches(me);
 
--- Rafraîchissement de la vue matérialisée : PAS de trigger synchrone.
--- REFRESH ... CONCURRENTLY est interdit à l'intérieur d'une transaction, or un
--- trigger s'exécute dans la transaction de l'écriture : il ferait échouer chaque
--- écriture de collection. Le refresh est donc un job planifié :
---   Option A (Supabase) : activer l'extension pg_cron puis :
---     select cron.schedule('refresh-trade-matches', '*/5 * * * *',
---       $$refresh materialized view concurrently trade_matches$$);
---   Option B : Vercel Cron → appel de l'endpoint de sync (service role).
--- La matview n'a pas besoin d'être temps réel : quelques minutes de retard
--- sur les matches sont acceptables (cf. spec §10.6).
+create or replace function refresh_trade_matches()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  refresh materialized view concurrently trade_matches;
+  return null;
+end;
+$$;
+
+create or replace trigger collection_items_changed
+after insert or update or delete on collection_items
+for each statement execute function refresh_trade_matches();
 
 -- Historique des prix (alimenté par le job de synchronisation quotidien ;
 -- cards.market_price reste le dernier point pour l'affichage rapide).
@@ -279,17 +230,9 @@ create policy "trades participant select" on trades
 create policy "trades author insert" on trades
   for insert with check (auth.uid() = from_user);
 create policy "trades recipient decide" on trades
-  for update
-  using (auth.uid() = to_user and status = 'proposed')
-  with check (auth.uid() = to_user and status in ('accepted', 'declined'));
+  for update using (auth.uid() = to_user and status = 'proposed');
 create policy "trades author cancel" on trades
-  for update
-  using (auth.uid() = from_user and status = 'proposed')
-  with check (auth.uid() = from_user and status = 'cancelled');
-create policy "trades participants complete" on trades
-  for update
-  using (auth.uid() in (from_user, to_user) and status = 'accepted')
-  with check (auth.uid() in (from_user, to_user) and status = 'completed');
+  for update using (auth.uid() = from_user and status = 'proposed');
 
 create policy "trade cards participant select" on trade_cards
   for select using (
