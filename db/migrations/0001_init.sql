@@ -3,6 +3,7 @@
 -- trades, trade_cards, trade_feedback + indexes matching + matview.
 
 create extension if not exists pgcrypto;
+create extension if not exists pg_trgm;
 create extension if not exists citext;
 
 -- Référentiel carte (miroir PokéTCG API)
@@ -33,6 +34,8 @@ create table cards (
 create index cards_set_idx on cards(set_id);
 create index cards_name_idx on cards(lower(name));
 create index cards_number_idx on cards(set_id, number);
+create index cards_name_trgm_idx on cards using gin (name gin_trgm_ops);
+create index cards_name_fr_trgm_idx on cards using gin (name_fr gin_trgm_ops);
 
 -- Utilisateurs
 create table profiles (
@@ -47,13 +50,16 @@ create table profiles (
 );
 
 -- Collection
+-- La langue fait partie de la clé : un collectionneur peut posséder la même
+-- carte en plusieurs éditions (FR/EN/JP) avec des quantités distinctes.
 create table collection_items (
   user_id uuid references profiles(id) on delete cascade,
   card_id text references cards(id),
+  language text not null default 'fr' check (language in ('fr', 'en', 'de', 'es', 'it', 'jp')),
   quantity_owned int not null default 0 check (quantity_owned >= 0),
   quantity_wanted int not null default 0 check (quantity_wanted >= 0),
   condition text check (condition in ('mint', 'excellent', 'good', 'played')),
-  primary key (user_id, card_id)
+  primary key (user_id, card_id, language)
 );
 create index collection_items_user_idx on collection_items(user_id);
 create index idx_owned_dupes on collection_items(user_id)
@@ -138,6 +144,18 @@ create or replace trigger collection_items_changed
 after insert or update or delete on collection_items
 for each statement execute function refresh_trade_matches();
 
+-- Historique des prix (alimenté par le job de synchronisation quotidien ;
+-- cards.market_price reste le dernier point pour l'affichage rapide)
+create table card_prices (
+  card_id text references cards(id) on delete cascade,
+  source text not null,
+  recorded_at date not null,
+  price numeric(10, 2) not null,
+  currency text not null default 'EUR',
+  primary key (card_id, source, recorded_at)
+);
+create index card_prices_card_idx on card_prices(card_id, recorded_at desc);
+
 -- Jeux (verticaux TCG) : Pokémon en MVP, extension Magic / Yu-Gi-Oh! / One Piece… (cf. spec §1, Phase 4)
 create table games (
   id text primary key,
@@ -162,6 +180,9 @@ alter table games enable row level security;
 create policy "games readable" on games for select using (true);
 create policy "sets readable" on sets for select using (true);
 create policy "cards readable" on cards for select using (true);
+-- card_prices : lecture publique, écriture réservée au service role (job de sync)
+alter table card_prices enable row level security;
+create policy "prices readable" on card_prices for select using (true);
 
 create policy "profiles self update" on profiles for update using (auth.uid() = id);
 create policy "profiles insert self" on profiles for insert with check (auth.uid() = id);
