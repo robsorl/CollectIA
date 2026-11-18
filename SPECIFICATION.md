@@ -214,14 +214,15 @@ CREATE TABLE cards (
   api_updated_at TIMESTAMPTZ
 );
 
--- Historique des prix (job de sync quotidien ; distingue source / prix relevé)
+-- Historique des prix (job de sync quotidien ; source + variante ; prix vendu → Phase 3)
 CREATE TABLE card_prices (
   card_id TEXT REFERENCES cards(id) ON DELETE CASCADE,
   source TEXT NOT NULL,             -- 'pokemontcg_tcgplayer', 'cardmarket'...
+  variant TEXT NOT NULL DEFAULT 'normal',  -- 'normal', 'holofoil', 'reverseHolofoil'...
   recorded_at DATE NOT NULL,
   price NUMERIC(10,2) NOT NULL,
   currency TEXT NOT NULL DEFAULT 'EUR',
-  PRIMARY KEY (card_id, source, recorded_at)
+  PRIMARY KEY (card_id, source, variant, recorded_at)
 );
 
 -- Utilisateurs

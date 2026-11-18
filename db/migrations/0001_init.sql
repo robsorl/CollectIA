@@ -4,6 +4,7 @@
 
 create extension if not exists pgcrypto;
 create extension if not exists pg_trgm;
+create extension if not exists unaccent;
 create extension if not exists citext;
 
 -- Référentiel carte (miroir PokéTCG API)
@@ -34,8 +35,21 @@ create table cards (
 create index cards_set_idx on cards(set_id);
 create index cards_name_idx on cards(lower(name));
 create index cards_number_idx on cards(set_id, number);
-create index cards_name_trgm_idx on cards using gin (name gin_trgm_ops);
-create index cards_name_fr_trgm_idx on cards using gin (name_fr gin_trgm_ops);
+
+-- Recherche tolérante : trigramme + suppression des accents (immuable) pour que
+-- "Dracaufoeu" ou "Dracaufeu" matchent la même ligne.
+create or replace function f_unaccent(t text)
+returns text
+language sql
+immutable
+strict
+parallel safe
+as $$
+  select unaccent('unaccent', t);
+$$;
+
+create index cards_name_trgm_idx on cards using gin (f_unaccent(lower(name)) gin_trgm_ops);
+create index cards_name_fr_trgm_idx on cards using gin (f_unaccent(lower(name_fr)) gin_trgm_ops);
 
 -- Utilisateurs
 create table profiles (
@@ -145,14 +159,18 @@ after insert or update or delete on collection_items
 for each statement execute function refresh_trade_matches();
 
 -- Historique des prix (alimenté par le job de synchronisation quotidien ;
--- cards.market_price reste le dernier point pour l'affichage rapide)
+-- cards.market_price reste le dernier point pour l'affichage rapide).
+-- Dimension "variant" : les sources exposent des prix par variant (PokéTCG API :
+-- normal / holofoil / reverseHolofoil). Le "prix vendu" réel n'est pas exposé par
+-- les sources publiques : il viendra des transactions de notre marketplace (Phase 3).
 create table card_prices (
   card_id text references cards(id) on delete cascade,
   source text not null,
+  variant text not null default 'normal',
   recorded_at date not null,
   price numeric(10, 2) not null,
   currency text not null default 'EUR',
-  primary key (card_id, source, recorded_at)
+  primary key (card_id, source, variant, recorded_at)
 );
 create index card_prices_card_idx on card_prices(card_id, recorded_at desc);
 
