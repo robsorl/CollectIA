@@ -195,6 +195,8 @@ Statuts affichés en fil : `Proposé → Accepté/Refusé` + bouton "Marquer com
 
 ## 5. Modèle de données (PostgreSQL / Supabase)
 
+> Extraction indicative — la source de vérité exécutable est [`db/migrations/0001_init.sql`](db/migrations/0001_init.sql) (sécurité RLS documentée dans [docs/DATABASE.md](docs/DATABASE.md)).
+
 ```sql
 -- Référentiel carte (miroir PokéTCG API)
 CREATE TABLE sets (
@@ -206,8 +208,21 @@ CREATE TABLE sets (
 CREATE TABLE cards (
   id TEXT PRIMARY KEY,              -- id API ex. "swsh1-44"
   set_id TEXT REFERENCES sets(id), number TEXT, name TEXT NOT NULL,
+  name_fr TEXT,                     -- via TCGdex (affichage FR)
   rarity TEXT, supertype TEXT, types TEXT[], image_url TEXT,
-  market_price NUMERIC(10,2), api_updated_at TIMESTAMPTZ
+  market_price NUMERIC(10,2),       -- dernier prix connu (affichage)
+  api_updated_at TIMESTAMPTZ
+);
+
+-- Historique des prix (job de sync quotidien ; source + variante ; prix vendu → Phase 3)
+CREATE TABLE card_prices (
+  card_id TEXT REFERENCES cards(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,             -- 'pokemontcg_tcgplayer', 'cardmarket'...
+  variant TEXT NOT NULL DEFAULT 'normal',  -- 'normal', 'holofoil', 'reverseHolofoil'...
+  recorded_at DATE NOT NULL,
+  price NUMERIC(10,2) NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'EUR',
+  PRIMARY KEY (card_id, source, variant, recorded_at)
 );
 
 -- Utilisateurs
@@ -219,13 +234,14 @@ CREATE TABLE profiles (
     CHECK (visibility IN ('public','matches_only','private'))
 );
 
--- Collection
+-- Collection (langue dans la clé : un exemplaire FR et un EN coexistent)
 CREATE TABLE collection_items (
   user_id UUID REFERENCES profiles(id), card_id TEXT REFERENCES cards(id),
+  language TEXT NOT NULL DEFAULT 'fr' CHECK (language IN ('fr','en','de','es','it','jp')),
   quantity_owned INT NOT NULL DEFAULT 0 CHECK (quantity_owned >= 0),
   quantity_wanted INT NOT NULL DEFAULT 0 CHECK (quantity_wanted >= 0),
   condition TEXT CHECK (condition IN ('mint','excellent','good','played')),
-  PRIMARY KEY (user_id, card_id)
+  PRIMARY KEY (user_id, card_id, language)
 );
 CREATE INDEX ON collection_items (user_id, quantity_owned);
 

@@ -24,8 +24,8 @@ npm run dev
 
 ## Base de données
 
-Schéma et RLS dans `db/migrations/0001_init.sql` — à appliquer via l'éditeur SQL
-Supabase ou `supabase db push` (si CLI configurée). Inclut :
+Schéma, sécurité (RLS) et recherche : **[docs/DATABASE.md](docs/DATABASE.md)**.
+La migration source est `db/migrations/0001_init.sql`. Inclut :
 
 - référentiel `sets`/`cards` (miroir PokéTCG API)
 - `profiles`, `collection_items` (quantités possédée/souhaitée, badges doublons)
@@ -51,6 +51,7 @@ node ocr-prototype.mjs https://images.pokemontcg.io/swsh1/44_hires.png
 | `npm run dev` | serveur de développement |
 | `npm run build` | build production (bloquant en CI) |
 | `npm run typecheck` | TypeScript strict |
+| `npm run test` | tests unitaires (vitest) |
 
 ## Roadmap
 
