@@ -16,6 +16,7 @@ declare
   v_a uuid;
   v_b uuid;
   v_updated int;
+  v_guard_triggered boolean := false;
 begin
   -- Utilisateurs de test
   select u.id into v_a from auth.users u where u.email = 'test-a@test.local';
@@ -115,21 +116,49 @@ begin
   -- S9 (nouveau) : le trigger interdit de modifier autre chose que le statut —
   --      A (destinataire d'un échange proposed) tente de s'attribuer un autre message
   execute 'set local role postgres';
+  -- vider le contexte JWT AVANT la préparation : le trigger ne bypass qu'en
+  -- l'absence de JWT, sinon la réinitialisation declined -> proposed serait
+  -- rejetée comme transition interdite (le statut declined est terminal).
+  perform set_config('request.jwt.claims', '', false);
   update trades set status = 'proposed' where from_user = v_b and to_user = v_a;
   perform set_config('request.jwt.claims',
     json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
   execute 'set local role authenticated';
+
+  -- Pré-contrôle : l'échange proposed doit être visible de A (sinon contexte JWT faux
+  -- et le résultat du scénario serait sans valeur).
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+  ), 'S9 échoué : A ne voit pas l''échange proposed (contexte JWT faux ?)';
+  raise notice 'S9 OK : échange proposed visible de A (destinataire)';
+
+  -- Tentative : modifier message EN MÊME TEMPS que le statut. Le garde-fou attendu
+  -- est l'exception du trigger (raise_exception) — la policy WITH CHECK renverrait
+  -- elle insufficient_privilege. L'assertion finale est HORS du bloc EXCEPTION :
+  -- un update réussi laisserait v_guard_triggered = false et ferait échouer le test.
   begin
     update trades
     set message = 'piraté', status = 'accepted'
     where from_user = v_b and to_user = v_a and status = 'proposed';
     get diagnostics v_updated = row_count;
-    assert v_updated = 0, 'S9 échoué : modification de message acceptée !';
-    raise notice 'S9 OK : colonnes protégées par la machine à états';
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
   exception
-    when others then
-      raise notice 'S9 OK : garde-fou déclenché (%)', sqlerrm;
+    when raise_exception or insufficient_privilege then
+      v_guard_triggered := true;
+      raise notice 'S9 : garde-fou déclenché (%)', sqlerrm;
   end;
+
+  -- Assertions hors du bloc EXCEPTION : aucun gestionnaire ne peut les masquer.
+  assert v_guard_triggered, 'S9 échoué : garde-fou non déclenché !';
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and coalesce(message, '') <> 'piraté'
+  ), 'S9 échoué : le message ou le statut a été modifié !';
+  raise notice 'S9 OK : colonnes protégées par la machine à états';
 
   -- Nettoyage (retour postgres, bypass RLS)
   perform set_config('request.jwt.claims', '', false);
