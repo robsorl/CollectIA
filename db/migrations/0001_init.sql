@@ -105,8 +105,8 @@ create table theme_cards (
 -- Échanges
 create table trades (
   id uuid primary key default gen_random_uuid(),
-  from_user uuid references profiles(id),
-  to_user uuid references profiles(id),
+  from_user uuid references profiles(id) not null,
+  to_user uuid references profiles(id) not null,
   status text not null default 'proposed'
     check (status in ('proposed', 'accepted', 'declined', 'cancelled', 'completed')),
   message text,
@@ -136,7 +136,8 @@ create table trade_feedback (
 --   proposed → accepted | declined (destinataire) ; proposed → cancelled (auteur) ;
 --   accepted → completed (participants) ; états terminaux irréversibles.
 -- Les policies RLS filtrent QUI peut écrire ; ce trigger garantit QUOI peut changer
--- (statut seul + transition valide). Sans JWT (maintenance/service role) : bypass.
+-- (statut seul + transition valide). Bypass : sans JWT (maintenance directe) OU
+-- JWT service_role (reconnu explicitement par le claim "role").
 create or replace function trades_guard_transition()
 returns trigger
 language plpgsql
@@ -147,19 +148,22 @@ declare
   actor uuid;
   claims text;
 begin
-  -- Bypass uniquement SANS JWT (service role / maintenance directe) : PostgREST
-  -- laisse request.jwt.claims NULL ou vide hors requête client authentifiée.
-  -- Ne pas s'appuyer sur auth.uid() (jamais NULL chez Supabase : fallback uuid-zéro).
+  -- Bypass : sans JWT (maintenance directe, PostgREST laisse request.jwt.claims
+  -- NULL ou vide hors requête client) OU JWT service_role (claims sans sub : il
+  -- faut reconnaître le rôle, sinon le service role serait bloqué par son propre
+  -- trigger). Un JWT user quelconque sans sub ne bypass PAS : il est rejeté.
   claims := coalesce(current_setting('request.jwt.claims', true), '');
-  if claims = '' then
+  if claims = '' or claims::jsonb->>'role' = 'service_role' then
     return new;
   end if;
-  actor := (claims::json->>'sub')::uuid;
+  actor := (claims::jsonb->>'sub')::uuid;
 
   -- Colonnes immuables : id, created_at, participants, message.
-  if new.id <> old.id or new.created_at <> old.created_at
-     or new.from_user <> old.from_user or new.to_user <> old.to_user
-     or coalesce(new.message, '') <> coalesce(old.message, '') then
+  -- IS DISTINCT FROM : <> produit NULL face à NULL — l'immuabilité passerait à la
+  -- traverse (NULL → valeur) ; message : NULL ≠ '' strictement.
+  if new.id is distinct from old.id or new.created_at is distinct from old.created_at
+     or new.from_user is distinct from old.from_user or new.to_user is distinct from old.to_user
+     or new.message is distinct from old.message then
     raise exception 'trades : colonnes immuables (id, created_at, participants, message)';
   end if;
 

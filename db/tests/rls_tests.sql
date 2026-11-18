@@ -160,6 +160,50 @@ begin
   ), 'S9 échoué : le message ou le statut a été modifié !';
   raise notice 'S9 OK : colonnes protégées par la machine à états';
 
+  -- S10 : JWT service_role -> bypass du trigger ; une transition autorisée doit
+  --       réussir même sans sub (claims sans utilisateur).
+  perform set_config('request.jwt.claims',
+    json_build_object('role', 'service_role')::text, false);
+  execute 'set local role postgres';  -- comme le service_role Supabase (bypass RLS)
+  update trades set status = 'accepted'
+  where from_user = v_b and to_user = v_a and status = 'proposed';
+  get diagnostics v_updated = row_count;
+  assert v_updated = 1, 'S10 échoué : le bypass JWT service_role ne fonctionne pas';
+  raise notice 'S10 OK : bypass JWT service_role (transition autorisée réussie)';
+  update trades set status = 'proposed' where from_user = v_b and to_user = v_a;
+
+  -- S11 : immuabilité NULL -> valeur. L'ancienne comparaison <> renvoyait NULL
+  --       (pas TRUE) face à old.created_at NULL : la modification passait. Avec
+  --       IS DISTINCT FROM, le garde-fou doit déclencher ; booléen + assertion
+  --       finale HORS du bloc EXCEPTION (même schéma que S9).
+  insert into trades (from_user, to_user, status, created_at, message)
+  values (v_b, v_a, 'proposed', null, null);  -- service_role toujours en contexte
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  v_guard_triggered := false;
+  begin
+    update trades
+    set status = 'accepted', created_at = '2000-01-01', message = 'piraté'
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and created_at is null;
+    get diagnostics v_updated = row_count;
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
+  exception
+    when raise_exception or insufficient_privilege then
+      v_guard_triggered := true;
+      raise notice 'S11 : garde-fou déclenché (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S11 échoué : traversée NULL -> valeur acceptée !';
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and created_at is null and message is null
+  ), 'S11 échoué : la traversée NULL -> valeur a été appliquée !';
+  raise notice 'S11 OK : immuabilité NULL -> valeur (IS DISTINCT FROM)';
+
   -- Nettoyage (retour postgres, bypass RLS)
   perform set_config('request.jwt.claims', '', false);
   execute 'set local role postgres';

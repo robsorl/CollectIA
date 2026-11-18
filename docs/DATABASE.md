@@ -50,12 +50,17 @@ les policies RLS ne peuvent pas exprimer (contraintes sur les nouvelles valeurs)
 | Tous | statut inchangé | aucune autre colonne modifiable |
 
 Colonnes immuables après création : `id`, `created_at`, `from_user`, `to_user`,
-`message`. La colonne `completed_at` appartient au trigger : horodatée `now()` à
-la clôture réelle, `NULL` sinon — aucune date fournie par le client n'est
-conservée (pas de `coalesce`).
-Sans session utilisateur (JWT absent) : bypass pour le service role. Les policies
-`FOR UPDATE` sur `trades` portent `USING` + `WITH CHECK` correspondants
-(les policies permissives se combinent en OR — le trigger reste la contrainte forte).
+`message` (comparaison `IS DISTINCT FROM`, robuste contre NULL — la traversée
+NULL → valeur est également bloquée). `from_user` et `to_user` sont `NOT NULL` :
+un échange sans auteur ou destinataire n'a pas de sens métier. La colonne
+`completed_at` appartient au trigger : horodatée `now()` à la clôture réelle,
+`NULL` sinon — aucune date fournie par le client n'est conservée (pas de
+`coalesce`).
+Bypass du trigger : sans JWT (maintenance directe) **ou** JWT `service_role`
+(le claim `role` est reconnu explicitement — un JWT utilisateur sans `sub` ne
+bypass pas, il est rejeté). Les policies `FOR UPDATE` sur `trades` portent
+`USING` + `WITH CHECK` correspondants (les policies permissives se combinent
+en OR — le trigger reste la contrainte forte).
 
 ## Recherche
 

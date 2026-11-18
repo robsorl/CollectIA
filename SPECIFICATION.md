@@ -258,7 +258,7 @@ CREATE TABLE theme_cards (
 -- Échanges
 CREATE TABLE trades (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_user UUID REFERENCES profiles(id), to_user UUID REFERENCES profiles(id),
+  from_user UUID REFERENCES profiles(id) NOT NULL, to_user UUID REFERENCES profiles(id) NOT NULL,
   status TEXT NOT NULL DEFAULT 'proposed'
     CHECK (status IN ('proposed','accepted','declined','cancelled','completed')),
   message TEXT, created_at TIMESTAMPTZ DEFAULT now(),
