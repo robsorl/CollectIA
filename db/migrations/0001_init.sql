@@ -1,11 +1,20 @@
 -- CardVault / CollectIA — initialisation du schéma (cf. SPECIFICATION.md §5)
--- Tables : sets, cards, profiles, collection_items, themes, theme_cards,
+-- Tables : games, sets, cards, profiles, collection_items, themes, theme_cards,
 -- trades, trade_cards, trade_feedback + indexes matching + matview.
 
 create extension if not exists pgcrypto;
 create extension if not exists pg_trgm;
 create extension if not exists unaccent;
 create extension if not exists citext;
+
+-- Jeux (verticaux TCG) : création AVANT sets (FK référencée).
+-- Pokémon en MVP, extension Magic / Yu-Gi-Oh! / One Piece / Lorcana… (cf. spec §1, Phase 4)
+create table games (
+  id text primary key,
+  name text not null,
+  enabled boolean not null default false
+);
+insert into games (id, name, enabled) values ('pokemon', 'Pokémon JCC', true);
 
 -- Référentiel carte (miroir PokéTCG API)
 create table sets (
@@ -136,19 +145,33 @@ set search_path = public, auth
 as $$
 declare
   actor uuid;
+  claims text;
 begin
-  actor := auth.uid();
-  if actor is null then
+  -- Bypass uniquement SANS JWT (service role / maintenance directe) : PostgREST
+  -- laisse request.jwt.claims NULL ou vide hors requête client authentifiée.
+  -- Ne pas s'appuyer sur auth.uid() (jamais NULL chez Supabase : fallback uuid-zéro).
+  claims := coalesce(current_setting('request.jwt.claims', true), '');
+  if claims = '' then
     return new;
   end if;
+  actor := (claims::json->>'sub')::uuid;
 
-  if new.from_user<> old.from_user or new.to_user <> old.to_user
+  -- Colonnes immuables : id, created_at, participants, message.
+  if new.id <> old.id or new.created_at <> old.created_at
+     or new.from_user <> old.from_user or new.to_user <> old.to_user
      or coalesce(new.message, '') <> coalesce(old.message, '') then
-    raise exception 'trades : seuls le statut et completed_at sont modifiables';
+    raise exception 'trades : colonnes immuables (id, created_at, participants, message)';
   end if;
 
+  -- Aucune transition : completed_at reste strictement inchangé (jamais client).
   if new.status = old.status then
+    new.completed_at := old.completed_at;
     return new;
+  end if;
+
+  -- États terminaux irréversibles.
+  if old.status in ('declined', 'cancelled', 'completed') then
+    raise exception 'trades : le statut % est terminal (irréversible)', old.status;
   end if;
 
   if old.status = 'proposed' and new.status in ('accepted', 'declined')
@@ -164,8 +187,10 @@ begin
     raise exception 'trades : transition % -> % interdite pour cet acteur', old.status, new.status;
   end if;
 
+  -- completed_at appartient au trigger : now() à la clôture réelle, NULL sinon.
+  -- Aucune date fournie par le client n'est conservée.
   if new.status = 'completed' then
-    new.completed_at := coalesce(new.completed_at, now());
+    new.completed_at := now();
   else
     new.completed_at := null;
   end if;
@@ -177,21 +202,30 @@ create trigger trades_transition_guard
 before update on trades
 for each row execute function trades_guard_transition();
 
--- Matching : mes doublons ∩ sa wishlist + ses doublons ∩ ma wishlist
+-- Matching : mes doublons ∩ sa wishlist + ses doublons ∩ ma wishlist.
+-- Un couple (me, other) peut matcher dans les deux directions : les deux branches
+-- sont réunies par UNION ALL puis AGRÉGÉES (sum) pour garantir l'unicité sur
+-- (me, other) — sinon REFRESH CONCURRENTLY échoue sur l'index unique.
 create materialized view trade_matches as
-select a.user_id as me, b.user_id as other, count(*) as score
-from collection_items a
-join collection_items b on b.card_id = a.card_id
-where a.quantity_owned > a.quantity_wanted
-  and b.quantity_wanted > b.quantity_owned
-group by a.user_id, b.user_id
-union all
-select a.user_id, b.user_id, count(*)
-from collection_items a
-join collection_items b on b.card_id = a.card_id
-where b.quantity_owned > b.quantity_wanted
-  and a.quantity_wanted > a.quantity_owned
-group by a.user_id, b.user_id;
+select me, other, sum(score) as score
+from (
+  select a.user_id as me, b.user_id as other, count(*) as score
+  from collection_items a
+  join collection_items b on b.card_id = a.card_id
+  where a.user_id <> b.user_id
+    and a.quantity_owned > a.quantity_wanted
+    and b.quantity_wanted > b.quantity_owned
+  group by a.user_id, b.user_id
+  union all
+  select a.user_id, b.user_id, count(*)
+  from collection_items a
+  join collection_items b on b.card_id = a.card_id
+  where a.user_id <> b.user_id
+    and b.quantity_owned > b.quantity_wanted
+    and a.quantity_wanted > a.quantity_owned
+  group by a.user_id, b.user_id
+) t
+group by me, other;
 
 create unique index trade_matches_unique on trade_matches(me, other);
 create index trade_matches_me_idx on trade_matches(me);
@@ -222,14 +256,6 @@ create table card_prices (
   primary key (card_id, source, variant, recorded_at)
 );
 create index card_prices_card_idx on card_prices(card_id, recorded_at desc);
-
--- Jeux (verticaux TCG) : Pokémon en MVP, extension Magic / Yu-Gi-Oh! / One Piece… (cf. spec §1, Phase 4)
-create table games (
-  id text primary key,
-  name text not null,
-  enabled boolean not null default false
-);
-insert into games (id, name, enabled) values ('pokemon', 'Pokémon JCC', true);
 
 -- ---------------------------------------------------------------- RLS
 alter table profiles enable row level security;

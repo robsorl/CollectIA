@@ -24,7 +24,10 @@ Source de vérité : [`db/migrations/0001_init.sql`](../db/migrations/0001_init.
 | `trade_feedback` | Réputation post-échange (👍) | `trade_id` |
 
 Objets calculés : vue matérialisée `trade_matches` (mes doublons ∩ sa wishlist et
-réciproquement, score = nombre de cartes croisées).
+réciproquement, score = nombre de cartes croisées). Les deux directions sont
+agrégées (`union all` puis `group by (me, other)` avec `sum(score)`) : un couple
+de collectionneurs peut matcher dans les deux sens, et l'unique index sur
+`(me, other)` doit rester sans doublon pour que le `refresh concurrently` passe.
 
 > ⚠️ **Pas de trigger de refresh** : `REFRESH ... CONCURRENTLY` est interdit dans
 > une transaction, or un trigger s'exécute dans celle de l'écriture — ce trigger
@@ -44,8 +47,12 @@ les policies RLS ne peuvent pas exprimer (contraintes sur les nouvelles valeurs)
 | Auteur (`from_user`) | `proposed` | `cancelled` |
 | Participants | `accepted` | `completed` (+ `completed_at`) |
 | Tous | `declined`, `cancelled`, `completed` | aucun (états terminaux) |
+| Tous | statut inchangé | aucune autre colonne modifiable |
 
-Colonnes immuables après création : `from_user`, `to_user`, `message`.
+Colonnes immuables après création : `id`, `created_at`, `from_user`, `to_user`,
+`message`. La colonne `completed_at` appartient au trigger : horodatée `now()` à
+la clôture réelle, `NULL` sinon — aucune date fournie par le client n'est
+conservée (pas de `coalesce`).
 Sans session utilisateur (JWT absent) : bypass pour le service role. Les policies
 `FOR UPDATE` sur `trades` portent `USING` + `WITH CHECK` correspondants
 (les policies permissives se combinent en OR — le trigger reste la contrainte forte).
