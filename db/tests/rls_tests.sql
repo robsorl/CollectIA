@@ -161,7 +161,10 @@ begin
   raise notice 'S9 OK : colonnes protégées par la machine à états';
 
   -- S10 : JWT service_role -> bypass du trigger ; une transition autorisée doit
-  --       réussir même sans sub (claims sans utilisateur).
+  --       réussir même sans sub (claims sans utilisateur). Portée : la branche du
+  --       trigger conditionnée au CLAIM est testée (pas une intégration de bout
+  --       en bout du rôle DB service_role de Supabase — celle-ci sera couverte à
+  --       l'exécution sur le projet réel).
   perform set_config('request.jwt.claims',
     json_build_object('role', 'service_role')::text, false);
   execute 'set local role postgres';  -- comme le service_role Supabase (bypass RLS)
