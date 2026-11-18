@@ -47,15 +47,29 @@ create index cards_number_idx on cards(set_id, number);
 
 -- Recherche tolérante : trigramme + suppression des accents (immuable) pour que
 -- "Dracaufoeu" ou "Dracaufeu" matchent la même ligne.
-create or replace function f_unaccent(t text)
-returns text
-language sql
-immutable
-strict
-parallel safe
-as $$
-  select unaccent('unaccent', t);
-$$;
+-- L'extension unaccent peut selon l'environnement être installée dans `public`
+-- (Postgres standard) ou dans `extensions` (Supabase) : on localise son schéma
+-- au moment de la migration et on génère un f_unaccent 100 % qualifié, immunisé
+-- contre le search_path de la session (question 42883 "during inlining").
+do $$
+declare
+  v_schema text;
+begin
+  select n.nspname into v_schema
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where p.proname = 'unaccent'
+    and p.proargtypes[0] = 'regdictionary'::regtype::oid
+  limit 1;
+  if v_schema is null then
+    raise exception 'extension unaccent introuvable : créez-la avant la migration';
+  end if;
+  execute format(
+    'create or replace function public.f_unaccent(t text) returns text
+       language sql immutable strict parallel safe
+     as $fn$ select %I.unaccent(''%I.unaccent''::regdictionary, t) $fn$',
+    v_schema, v_schema);
+end $$;
 
 create index cards_name_trgm_idx on cards using gin (f_unaccent(lower(name)) gin_trgm_ops);
 create index cards_name_fr_trgm_idx on cards using gin (f_unaccent(lower(name_fr)) gin_trgm_ops);
