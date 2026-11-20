@@ -15,11 +15,15 @@
 -- SECURITY DEFINER get_trade_matches() qui ne retourne que me = auth.uid().
 -- ============================================================================
 
--- 1) Révocation des grants trop larges éventuels (convergence instance existante)
-revoke all on all tables in schema public from anon, authenticated;
-revoke all on all sequences in schema public from anon, authenticated;
+-- 1) Révocation des grants trop larges éventuels (convergence instance existante).
+--     PUBLIC aussi : des droits accordés à ce rôle sont héritables par anon/
+--     authenticated et survivraient à une révocation limitée aux deux autres
+--     rôles (cf. audit v7).
+revoke all on all tables in schema public from anon, authenticated, public;
+revoke all on all sequences in schema public from anon, authenticated, public;
 revoke all on all functions in schema public from anon, authenticated;
 revoke all on all functions in schema public from public;
+revoke all on trade_matches from public;
 
 -- 2) anon : catalogue public, lecture seule
 grant usage on schema public to anon;
@@ -39,18 +43,23 @@ revoke all on trade_matches from public, anon, authenticated;
 
 -- 5) Accès aux matches : fonction cloisonnée (ne retourne que me = auth.uid(),
 --    et masque les profils privés des autres collectionneurs).
+-- search_path VIDE + objets 100 % qualifiés (audit v7) : une fonction
+-- SECURITY DEFINER avec search_path = public est vulnérable si un attaquant
+-- peut créer un objet dans un schéma résolu — ici tout est qualifié
+-- explicitement (public.trade_matches, public.profiles, auth.uid()).
 create or replace function get_trade_matches()
 returns table (me uuid, other uuid, score bigint)
 language sql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
   select tm.me, tm.other, tm.score
-  from trade_matches tm
-  join profiles p on p.id = tm.other
+  from public.trade_matches tm
+  join public.profiles p on p.id = tm.other
   where tm.me = auth.uid()
-    and p.visibility in ('public', 'matches_only');
+    and p.visibility in ('public', 'matches_only')
+;
 $$;
 revoke all on function get_trade_matches() from public, anon, authenticated;
 grant execute on function get_trade_matches() to authenticated;

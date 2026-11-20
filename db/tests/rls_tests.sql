@@ -302,14 +302,25 @@ begin
   --       et profils privés des autres collectionneurs masqués.
   execute 'set local role postgres';
   perform set_config('request.jwt.claims', '', false);
-  -- B passe en 'matches_only' : il accepte d'apparaître dans les fenêtres de
-  -- matching. Le setup initial (S6) le forçait 'private' pour le scénario de
-  -- discrétion : ce scénario est déjà passé, et un profil 'private' ne peut
-  -- légitimement pas être exposé dans get_trade_matches() (filtre ci-dessus).
-  update profiles set visibility = 'matches_only' where id = v_b;
+  -- B est encore 'private' (état imposé par le setup du scénario S6) : le test
+  -- DOIT d'abord démontrer que son match n'est PAS exposé (audit v7, point 3).
   insert into collection_items (user_id, card_id, language, quantity_owned, quantity_wanted)
   select v_b, id, 'fr', 0, 2 from cards limit 1;  -- B veut la carte doublonée par A
   refresh materialized view trade_matches;
+
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  assert not exists (
+    select 1 from get_trade_matches()
+  ), 'S14 échoué : le profil private de B est exposé dans le matching !';
+
+  -- S14-suite : B passe en 'matches_only' — il accepte d'apparaître dans les
+  -- fenêtres de matching. La visibilité est appliquée au moment de la requête
+  -- (jointure profiles dans la fonction) : aucun refresh supplémentaire requis.
+  execute 'set local role postgres';
+  perform set_config('request.jwt.claims', '', false);
+  update profiles set visibility = 'matches_only' where id = v_b;
 
   perform set_config('request.jwt.claims',
     json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
