@@ -258,7 +258,7 @@ CREATE TABLE theme_cards (
 -- Échanges
 CREATE TABLE trades (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_user UUID REFERENCES profiles(id), to_user UUID REFERENCES profiles(id),
+  from_user UUID REFERENCES profiles(id) NOT NULL, to_user UUID REFERENCES profiles(id) NOT NULL,
   status TEXT NOT NULL DEFAULT 'proposed'
     CHECK (status IN ('proposed','accepted','declined','cancelled','completed')),
   message TEXT, created_at TIMESTAMPTZ DEFAULT now(),
@@ -288,22 +288,28 @@ CREATE INDEX idx_wanted ON collection_items (user_id)
   WHERE quantity_wanted > quantity_owned;
 ```
 
-**Matching** (vue matérialisée, rafraîchie par job planifié pg_cron/Vercel Cron — jamais dans un trigger : `REFRESH ... CONCURRENTLY` est interdit en transaction) :
+**Matching** (vue matérialisée, rafraîchie par job planifié pg_cron/Vercel Cron — jamais dans un trigger : `REFRESH ... CONCURRENTLY` est interdit en transaction). Les deux directions sont agrégées (`union all` + `group by (me, other)` avec `sum(score)`) : sans cela un couple pouvant matcher dans les deux sens produirait un doublon qui ferait échouer l'index unique lors du refresh :
 ```sql
 CREATE MATERIALIZED VIEW trade_matches AS
-SELECT a.user_id AS me, b.user_id AS other, COUNT(*) AS score
-FROM collection_items a
-JOIN collection_items b ON b.card_id = a.card_id
-WHERE a.quantity_owned  > a.quantity_wanted      -- j'ai trop
-  AND b.quantity_wanted > b.quantity_owned       -- lui en veut
-GROUP BY a.user_id, b.user_id
-UNION ALL
-SELECT a.user_id, b.user_id, COUNT(*)
-FROM collection_items a
-JOIN collection_items b ON b.card_id = a.card_id
-WHERE b.quantity_owned  > b.quantity_wanted
-  AND a.quantity_wanted > a.quantity_owned
-GROUP BY a.user_id, b.user_id;
+SELECT me, other, SUM(score) AS score
+FROM (
+  SELECT a.user_id AS me, b.user_id AS other, COUNT(*) AS score
+  FROM collection_items a
+  JOIN collection_items b ON b.card_id = a.card_id
+  WHERE a.user_id <> b.user_id
+    AND a.quantity_owned  > a.quantity_wanted      -- j'ai trop
+    AND b.quantity_wanted > b.quantity_owned       -- lui en veut
+  GROUP BY a.user_id, b.user_id
+  UNION ALL
+  SELECT a.user_id, b.user_id, COUNT(*)
+  FROM collection_items a
+  JOIN collection_items b ON b.card_id = a.card_id
+  WHERE a.user_id <> b.user_id
+    AND b.quantity_owned  > b.quantity_wanted
+    AND a.quantity_wanted > a.quantity_owned
+  GROUP BY a.user_id, b.user_id
+) t
+GROUP BY me, other;
 ```
 
 ---

@@ -16,6 +16,7 @@ declare
   v_a uuid;
   v_b uuid;
   v_updated int;
+  v_guard_triggered boolean := false;
 begin
   -- Utilisateurs de test
   select u.id into v_a from auth.users u where u.email = 'test-a@test.local';
@@ -115,21 +116,96 @@ begin
   -- S9 (nouveau) : le trigger interdit de modifier autre chose que le statut —
   --      A (destinataire d'un échange proposed) tente de s'attribuer un autre message
   execute 'set local role postgres';
+  -- vider le contexte JWT AVANT la préparation : le trigger ne bypass qu'en
+  -- l'absence de JWT, sinon la réinitialisation declined -> proposed serait
+  -- rejetée comme transition interdite (le statut declined est terminal).
+  perform set_config('request.jwt.claims', '', false);
   update trades set status = 'proposed' where from_user = v_b and to_user = v_a;
   perform set_config('request.jwt.claims',
     json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
   execute 'set local role authenticated';
+
+  -- Pré-contrôle : l'échange proposed doit être visible de A (sinon contexte JWT faux
+  -- et le résultat du scénario serait sans valeur).
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+  ), 'S9 échoué : A ne voit pas l''échange proposed (contexte JWT faux ?)';
+  raise notice 'S9 OK : échange proposed visible de A (destinataire)';
+
+  -- Tentative : modifier message EN MÊME TEMPS que le statut. Le garde-fou attendu
+  -- est l'exception du trigger (raise_exception) — la policy WITH CHECK renverrait
+  -- elle insufficient_privilege. L'assertion finale est HORS du bloc EXCEPTION :
+  -- un update réussi laisserait v_guard_triggered = false et ferait échouer le test.
   begin
     update trades
     set message = 'piraté', status = 'accepted'
     where from_user = v_b and to_user = v_a and status = 'proposed';
     get diagnostics v_updated = row_count;
-    assert v_updated = 0, 'S9 échoué : modification de message acceptée !';
-    raise notice 'S9 OK : colonnes protégées par la machine à états';
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
   exception
-    when others then
-      raise notice 'S9 OK : garde-fou déclenché (%)', sqlerrm;
+    when raise_exception or insufficient_privilege then
+      v_guard_triggered := true;
+      raise notice 'S9 : garde-fou déclenché (%)', sqlerrm;
   end;
+
+  -- Assertions hors du bloc EXCEPTION : aucun gestionnaire ne peut les masquer.
+  assert v_guard_triggered, 'S9 échoué : garde-fou non déclenché !';
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and coalesce(message, '') <> 'piraté'
+  ), 'S9 échoué : le message ou le statut a été modifié !';
+  raise notice 'S9 OK : colonnes protégées par la machine à états';
+
+  -- S10 : JWT service_role -> bypass du trigger ; une transition autorisée doit
+  --       réussir même sans sub (claims sans utilisateur). Portée : la branche du
+  --       trigger conditionnée au CLAIM est testée (pas une intégration de bout
+  --       en bout du rôle DB service_role de Supabase — celle-ci sera couverte à
+  --       l'exécution sur le projet réel).
+  perform set_config('request.jwt.claims',
+    json_build_object('role', 'service_role')::text, false);
+  execute 'set local role postgres';  -- comme le service_role Supabase (bypass RLS)
+  update trades set status = 'accepted'
+  where from_user = v_b and to_user = v_a and status = 'proposed';
+  get diagnostics v_updated = row_count;
+  assert v_updated = 1, 'S10 échoué : le bypass JWT service_role ne fonctionne pas';
+  raise notice 'S10 OK : bypass JWT service_role (transition autorisée réussie)';
+  update trades set status = 'proposed' where from_user = v_b and to_user = v_a;
+
+  -- S11 : immuabilité NULL -> valeur. L'ancienne comparaison <> renvoyait NULL
+  --       (pas TRUE) face à old.created_at NULL : la modification passait. Avec
+  --       IS DISTINCT FROM, le garde-fou doit déclencher ; booléen + assertion
+  --       finale HORS du bloc EXCEPTION (même schéma que S9).
+  insert into trades (from_user, to_user, status, created_at, message)
+  values (v_b, v_a, 'proposed', null, null);  -- service_role toujours en contexte
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  v_guard_triggered := false;
+  begin
+    update trades
+    set status = 'accepted', created_at = '2000-01-01', message = 'piraté'
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and created_at is null;
+    get diagnostics v_updated = row_count;
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
+  exception
+    when raise_exception or insufficient_privilege then
+      v_guard_triggered := true;
+      raise notice 'S11 : garde-fou déclenché (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S11 échoué : traversée NULL -> valeur acceptée !';
+  assert exists (
+    select 1 from trades
+    where from_user = v_b and to_user = v_a and status = 'proposed'
+      and created_at is null and message is null
+  ), 'S11 échoué : la traversée NULL -> valeur a été appliquée !';
+  raise notice 'S11 OK : immuabilité NULL -> valeur (IS DISTINCT FROM)';
 
   -- Nettoyage (retour postgres, bypass RLS)
   perform set_config('request.jwt.claims', '', false);
