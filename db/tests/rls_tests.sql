@@ -207,6 +207,149 @@ begin
   ), 'S11 échoué : la traversée NULL -> valeur a été appliquée !';
   raise notice 'S11 OK : immuabilité NULL -> valeur (IS DISTINCT FROM)';
 
+  -- S12 : l'historique des cartes d'un échange est figé dès la décision —
+  --       pas d'ajout dans trade_cards après clôture, et quantité > 0 imposée.
+  execute 'set local role postgres';
+  perform set_config('request.jwt.claims', '', false);
+  -- clôture du second échange (created_at non NULL) via service (bypass trigger)
+  update trades set status = 'accepted'
+  where from_user = v_b and to_user = v_a and created_at is not null;
+  update trades set status = 'completed'
+  where from_user = v_b and to_user = v_a and created_at is not null;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_b::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+
+  v_guard_triggered := false;
+  begin
+    insert into trade_cards (trade_id, card_id, direction, quantity)
+    select t.id, (select id from cards limit 1), 'offered', 1 from trades t
+    where t.from_user = v_b and t.to_user = v_a and t.status = 'completed';
+    get diagnostics v_updated = row_count;
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
+  exception
+    when insufficient_privilege or raise_exception then
+      v_guard_triggered := true;
+      raise notice 'S12 : garde-fou déclenché (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S12 échoué : carte ajoutée à un échange clos !';
+
+  v_guard_triggered := false;
+  begin
+    insert into trade_cards (trade_id, card_id, direction, quantity)
+    select t.id, (select id from cards limit 1), 'offered', 0 from trades t
+    where t.from_user = v_b and t.to_user = v_a and t.status = 'proposed'
+      and t.created_at is null;
+  exception
+    when check_violation or insufficient_privilege or raise_exception then
+      v_guard_triggered := true;
+      raise notice 'S12 : quantité invalide bloquée (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S12 échoué : quantité 0 acceptée sur une carte !';
+
+  assert not exists (select 1 from trade_cards),
+    'S12 échoué : trade_cards n''est plus vide après les blocages !';
+  raise notice 'S12 OK : historique figé après clôture + quantité > 0';
+
+  -- S13 : anon = lecture seule du catalogue ; trade_matches jamais lisible
+  --       en direct (matview sans RLS :Granted passage technique refusé) ;
+  --       aucune écriture utilisateur sans contexte authentifié.
+  perform set_config('request.jwt.claims',
+    json_build_object('role', 'anon')::text, false);
+  execute 'set local role anon';
+  assert exists (select 1 from cards limit 1), 'S13 échoué : catalogue illisible pour anon';
+  v_guard_triggered := false;
+  begin
+    perform count(*) from trade_matches;
+  exception
+    when insufficient_privilege then
+      v_guard_triggered := true;
+  end;
+  assert v_guard_triggered, 'S13 échoué : anon lit trade_matches !';
+  v_guard_triggered := false;
+  begin
+    insert into collection_items (user_id, card_id, language, quantity_owned, quantity_wanted)
+    values (v_a, (select id from cards limit 1), 'fr', 1, 0);
+    get diagnostics v_updated = row_count;
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
+  exception
+    when insufficient_privilege then
+      v_guard_triggered := true;
+  end;
+  assert v_guard_triggered, 'S13 échoué : anon écrit dans une collection !';
+  raise notice 'S13 OK : anon = catalogue lecture seule, matches et écritures bloqués';
+
+  -- S13 bis : un connecté non plus — la matview n'est lisible QUE par sa
+  --           fenêtre personnelle (fonction S14).
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  v_guard_triggered := false;
+  begin
+    perform count(*) from trade_matches;
+  exception
+    when insufficient_privilege then
+      v_guard_triggered := true;
+  end;
+  assert v_guard_triggered, 'S13 échoué : trade_matches lisible par un authentifié !';
+  raise notice 'S13 bis OK : trade_matches inaccessible en direct pour un connecté';
+
+  -- S14 : fenêtre de matching get_trade_matches() : seulement ME = auth.uid(),
+  --       et profils privés des autres collectionneurs masqués.
+  execute 'set local role postgres';
+  perform set_config('request.jwt.claims', '', false);
+  -- B est encore 'private' (état imposé par le setup du scénario S6) : le test
+  -- DOIT d'abord démontrer que son match n'est PAS exposé (audit v7, point 3).
+  insert into collection_items (user_id, card_id, language, quantity_owned, quantity_wanted)
+  select v_b, id, 'fr', 0, 2 from cards limit 1;  -- B veut la carte doublonée par A
+  refresh materialized view trade_matches;
+
+  -- Non-vacuité (audit v8) : le jeu de test doit PROUVER qu'il produit le
+  -- match attendu dans la matview — sinon les assertions suivantes sur la
+  -- fonction passeraient même sans masquage.
+  assert exists (
+    select 1 from trade_matches
+    where me = v_a and other = v_b
+  ), 'S14 échoué : le jeu de test ne produit pas le match attendu dans la matview';
+
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  -- ciblé sur le couple (A, B) : sur le vrai projet, A peut avoir d'autres
+  -- matches légitimes avec des profils public/matches_only (audit v8).
+  assert not exists (
+    select 1 from get_trade_matches()
+    where me = v_a and other = v_b
+  ), 'S14 échoué : le profil private de B est exposé dans le matching !';
+
+  -- S14-suite : B passe en 'matches_only' — il accepte d'apparaître dans les
+  -- fenêtres de matching. La visibilité est appliquée au moment de la requête
+  -- (jointure profiles dans la fonction) : aucun refresh supplémentaire requis.
+  execute 'set local role postgres';
+  perform set_config('request.jwt.claims', '', false);
+  update profiles set visibility = 'matches_only' where id = v_b;
+
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+  assert exists (
+    select 1 from get_trade_matches() where me = v_a and other = v_b
+  ), 'S14 échoué : A ne voit pas son match';
+  assert not exists (
+    select 1 from get_trade_matches() where me <> v_a
+  ), 'S14 échoué : get_trade_matches() expose des lignes d''autrui !';
+
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_b::text, 'role', 'authenticated')::text, false);
+  assert exists (
+    select 1 from get_trade_matches() where me = v_b and other = v_a
+  ), 'S14 échoué : B ne voit pas son match (direction inverse)';
+  raise notice 'S14 OK : matches cloisonnés par utilisateur (me = auth.uid())';
+
   -- Nettoyage (retour postgres, bypass RLS)
   perform set_config('request.jwt.claims', '', false);
   execute 'set local role postgres';

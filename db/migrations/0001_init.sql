@@ -134,7 +134,7 @@ create table trade_cards (
   trade_id uuid references trades(id) on delete cascade,
   card_id text references cards(id),
   direction text check (direction in ('offered', 'requested')),
-  quantity int not null default 1,
+  quantity int not null default 1 check (quantity > 0),
   primary key (trade_id, card_id, direction)
 );
 
@@ -344,7 +344,11 @@ create policy "trade cards participant select" on trade_cards
   );
 create policy "trade cards author write" on trade_cards
   for insert with check (
-    exists (select 1 from trades t where t.id = trade_id and t.from_user = auth.uid())
+    exists (
+      select 1 from trades t
+      where t.id = trade_id and t.from_user = auth.uid()
+        and t.status = 'proposed'  -- l'historique des cartes est figé dès la décision
+    )
   );
 
 create policy "feedback trade insert" on trade_feedback
@@ -356,3 +360,10 @@ create policy "feedback trade insert" on trade_feedback
         and auth.uid() in (t.from_user, t.to_user) and t.from_user <> author
     )
   );
+
+-- ---------------------------------------------------------------- Data API
+-- Les privilèges SQL des rôles PostgREST sont posés PAR
+-- db/migrations/0002_data_api_grants.sql (privilèges MINIMAUX, objet par objet,
+-- et accès à trade_matches uniquement via la fonction cloisonnée
+-- get_trade_matches() — cf. audit v6 : la matview ne supporte pas la RLS,
+-- un grant global l'aurait rendue lisible publiquement).
