@@ -362,22 +362,8 @@ create policy "feedback trade insert" on trade_feedback
   );
 
 -- ---------------------------------------------------------------- Data API
--- Les rôles PostgREST (anon / authenticated / service_role) doivent pouvoir
--- toucher les tables : sans GRANT explicite, toute requête applicative échoue
--- en 42501 (l'option dashboard « Grant API access to new tables automatically »
--- étant volontairement OFF, cf. déploiement). La VRAIE frontière de sécurité
--- reste la RLS ci-dessus : ces grants ne donnent accès qu'aux lignes autorisées
--- par les 19 policies.
-do $$
-declare
-  r text;
-begin
-  foreach r in array array['anon', 'authenticated', 'service_role'] loop
-    if exists (select 1 from pg_roles where rolname = r) then
-      execute format('grant usage on schema public to %I', r);
-      execute format('grant all on all tables in schema public to %I', r);
-      execute format('grant all on all sequences in schema public to %I', r);
-      execute format('grant all on all functions in schema public to %I', r);
-    end if;
-  end loop;
-end $$;
+-- Les privilèges SQL des rôles PostgREST sont posés PAR
+-- db/migrations/0002_data_api_grants.sql (privilèges MINIMAUX, objet par objet,
+-- et accès à trade_matches uniquement via la fonction cloisonnée
+-- get_trade_matches() — cf. audit v6 : la matview ne supporte pas la RLS,
+-- un grant global l'aurait rendue lisible publiquement).

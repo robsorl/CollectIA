@@ -8,6 +8,14 @@ Source de vérité : [`db/migrations/0001_init.sql`](../db/migrations/0001_init.
    (ou `supabase db push` si la CLI est configurée)
 2. La migration est idempotente au niveau extensions (`create extension if not exists`)
    mais pas sur les tables : à n'exécuter que sur une base vierge.
+3. Une fois `0001_init.sql` exécuté, exécuter [`db/migrations/0002_data_api_grants.sql`](../db/migrations/0002_data_api_grants.sql)
+   — **indispensable** si l'option « Grant API access to new tables automatically »
+   est désactivée (c'est notre configuration, cf. audit v5 : les privilèges SQL
+   PostgREST ne sont posés par personne d'autre).
+4. Instance **déjà migrée** (`kutnkduubllkzcorlelj`) : ne PAS rejouer `0001_init.sql`
+   (il recréerait des objets existants). Exécuter uniquement `0002_data_api_grants.sql` :
+   il converge quel que soit l'état initial (révocation du bloc `grant all` global
+   posé en urgence pour le 42501, puis privilèges minimaux objet par objet).
 
 ## Tables
 
@@ -28,6 +36,13 @@ réciproquement, score = nombre de cartes croisées). Les deux directions sont
 agrégées (`union all` puis `group by (me, other)` avec `sum(score)`) : un couple
 de collectionneurs peut matcher dans les deux sens, et l'unique index sur
 `(me, other)` doit rester sans doublon pour que le `refresh concurrently` passe.
+
+> 🔒 **Accès cloisonné** : la matview ne supporte pas la RLS (limitation
+> PostgreSQL sur les vues matérialisées). Elle n'est donc **jamais lisible en
+> direct** par `anon`/`authenticated` — l'accès passe uniquement par la fonction
+> `SECURITY DEFINER get_trade_matches()` qui ne retourne que les lignes
+> `me = auth.uid()`, en masquant les collectionneurs au profil `private`.
+> Voir `db/migrations/0002_data_api_grants.sql` (privilèges minimaux).
 
 > ⚠️ **Pas de trigger de refresh** : `REFRESH ... CONCURRENTLY` est interdit dans
 > une transaction, or un trigger s'exécute dans celle de l'écriture — ce trigger
@@ -72,10 +87,11 @@ en OR — le trigger reste la contrainte forte).
 
 ## Tests RLS
 
-`db/tests/rls_tests.sql` — 12 scénarios d'accès croisés entre deux utilisateurs
+`db/tests/rls_tests.sql` — 14 scénarios d'accès croisés entre deux utilisateurs
 (écrits de propre gré, lecture croisée, modification croisée, usurpation d'identité,
 profil privé, catalogue public, échange décliné non réversible, machine à états
-+ bypass service_role, traversée NULL, historique de cartes figé + quantité).
++ bypass service_role, traversée NULL, historique de cartes figé + quantité,
+cloisonnement anon/matches, fenêtre de matching).
 À exécuter dans le SQL Editor Supabase une fois les deux utilisateurs de test
 créés (et, avant la synchro S1, le jeu [`db/tests/seed_catalog_mini.sql`](../db/tests/seed_catalog_mini.sql))
 — passerelle obligatoire avant la mise en production.
