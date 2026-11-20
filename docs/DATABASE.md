@@ -16,6 +16,11 @@ Source de vérité : [`db/migrations/0001_init.sql`](../db/migrations/0001_init.
    (il recréerait des objets existants). Exécuter uniquement `0002_data_api_grants.sql` :
    il converge quel que soit l'état initial (révocation du bloc `grant all` global
    posé en urgence pour le 42501, puis privilèges minimaux objet par objet).
+5. Si l'instance avait reçu la version PR #4 de `0001_init.sql` (le cas de
+   `kutnkduubllkzcorlelj` avant 2026-11-20), exécuter aussi
+   [`0003_trade_cards_instance_hardening.sql`](../db/migrations/0003_trade_cards_instance_hardening.sql) :
+   policy `trade cards author write` restreinte à `status = 'proposed'` et
+   `CHECK (quantity > 0)` — détectés manquants par l'échec de S12 sur le projet réel.
 
 ## Tables
 
