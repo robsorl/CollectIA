@@ -72,13 +72,15 @@ en OR — le trigger reste la contrainte forte).
 
 ## Tests RLS
 
-`db/tests/rls_tests.sql` — 8 scénarios d'accès croisés entre deux utilisateurs
+`db/tests/rls_tests.sql` — 12 scénarios d'accès croisés entre deux utilisateurs
 (écrits de propre gré, lecture croisée, modification croisée, usurpation d'identité,
-profil privé, catalogue public, échange décliné non réversible). À exécuter dans le
-SQL Editor Supabase une fois les deux utilisateurs de test créés — passerelle
-obligatoire avant la mise en production.
+profil privé, catalogue public, échange décliné non réversible, machine à états
++ bypass service_role, traversée NULL, historique de cartes figé + quantité).
+À exécuter dans le SQL Editor Supabase une fois les deux utilisateurs de test
+créés (et, avant la synchro S1, le jeu [`db/tests/seed_catalog_mini.sql`](../db/tests/seed_catalog_mini.sql))
+— passerelle obligatoire avant la mise en production.
 
-## Sécurité — Row Level Security (19 policies)
+## Sécurité — Row Level Security (21 policies)
 
 Principe : le client n'utilise **que la clé anon** ; chaque accès passe par les
 policies côté Postgres. Aucune clé `service_role` dans le code applicatif

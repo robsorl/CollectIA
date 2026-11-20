@@ -134,7 +134,7 @@ create table trade_cards (
   trade_id uuid references trades(id) on delete cascade,
   card_id text references cards(id),
   direction text check (direction in ('offered', 'requested')),
-  quantity int not null default 1,
+  quantity int not null default 1 check (quantity > 0),
   primary key (trade_id, card_id, direction)
 );
 
@@ -344,7 +344,11 @@ create policy "trade cards participant select" on trade_cards
   );
 create policy "trade cards author write" on trade_cards
   for insert with check (
-    exists (select 1 from trades t where t.id = trade_id and t.from_user = auth.uid())
+    exists (
+      select 1 from trades t
+      where t.id = trade_id and t.from_user = auth.uid()
+        and t.status = 'proposed'  -- l'historique des cartes est figé dès la décision
+    )
   );
 
 create policy "feedback trade insert" on trade_feedback

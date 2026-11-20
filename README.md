@@ -30,7 +30,7 @@ La migration source est `db/migrations/0001_init.sql`. Inclut :
 - référentiel `sets`/`cards` (miroir PokéTCG API)
 - `profiles`, `collection_items` (quantités possédée/souhaitée, badges doublons)
 - `themes`/`theme_cards`, `trades`/`trade_cards`, `trade_feedback`
-- vue matérialisée `trade_matches` (mes doublons ∩ sa wishlist) + trigger de refresh
+- vue matérialisée `trade_matches` (mes doublons ∩ sa wishlist) rafraîchie par job planifié pg_cron (jamais de trigger : `REFRESH CONCURRENTLY` est interdit en transaction) ; grants Data API explicites (le dashboard « Grant API access automatique » étant OFF, cf. docs/DATABASE.md)
 
 ## Prototype scan OCR
 

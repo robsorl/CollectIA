@@ -207,6 +207,52 @@ begin
   ), 'S11 échoué : la traversée NULL -> valeur a été appliquée !';
   raise notice 'S11 OK : immuabilité NULL -> valeur (IS DISTINCT FROM)';
 
+  -- S12 : l'historique des cartes d'un échange est figé dès la décision —
+  --       pas d'ajout dans trade_cards après clôture, et quantité > 0 imposée.
+  execute 'set local role postgres';
+  perform set_config('request.jwt.claims', '', false);
+  -- clôture du second échange (created_at non NULL) via service (bypass trigger)
+  update trades set status = 'accepted'
+  where from_user = v_b and to_user = v_a and created_at is not null;
+  update trades set status = 'completed'
+  where from_user = v_b and to_user = v_a and created_at is not null;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', v_b::text, 'role', 'authenticated')::text, false);
+  execute 'set local role authenticated';
+
+  v_guard_triggered := false;
+  begin
+    insert into trade_cards (trade_id, card_id, direction, quantity)
+    select t.id, (select id from cards limit 1), 'offered', 1 from trades t
+    where t.from_user = v_b and t.to_user = v_a and t.status = 'completed';
+    get diagnostics v_updated = row_count;
+    if v_updated = 0 then
+      v_guard_triggered := true;
+    end if;
+  exception
+    when insufficient_privilege or raise_exception then
+      v_guard_triggered := true;
+      raise notice 'S12 : garde-fou déclenché (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S12 échoué : carte ajoutée à un échange clos !';
+
+  v_guard_triggered := false;
+  begin
+    insert into trade_cards (trade_id, card_id, direction, quantity)
+    select t.id, (select id from cards limit 1), 'offered', 0 from trades t
+    where t.from_user = v_b and t.to_user = v_a and t.status = 'proposed'
+      and t.created_at is null;
+  exception
+    when check_violation or insufficient_privilege or raise_exception then
+      v_guard_triggered := true;
+      raise notice 'S12 : quantité invalide bloquée (%)', sqlerrm;
+  end;
+  assert v_guard_triggered, 'S12 échoué : quantité 0 acceptée sur une carte !';
+
+  assert not exists (select 1 from trade_cards),
+    'S12 échoué : trade_cards n''est plus vide après les blocages !';
+  raise notice 'S12 OK : historique figé après clôture + quantité > 0';
+
   -- Nettoyage (retour postgres, bypass RLS)
   perform set_config('request.jwt.claims', '', false);
   execute 'set local role postgres';
