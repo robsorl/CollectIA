@@ -356,3 +356,24 @@ create policy "feedback trade insert" on trade_feedback
         and auth.uid() in (t.from_user, t.to_user) and t.from_user <> author
     )
   );
+
+-- ---------------------------------------------------------------- Data API
+-- Les rôles PostgREST (anon / authenticated / service_role) doivent pouvoir
+-- toucher les tables : sans GRANT explicite, toute requête applicative échoue
+-- en 42501 (l'option dashboard « Grant API access to new tables automatically »
+-- étant volontairement OFF, cf. déploiement). La VRAIE frontière de sécurité
+-- reste la RLS ci-dessus : ces grants ne donnent accès qu'aux lignes autorisées
+-- par les 19 policies.
+do $$
+declare
+  r text;
+begin
+  foreach r in array array['anon', 'authenticated', 'service_role'] loop
+    if exists (select 1 from pg_roles where rolname = r) then
+      execute format('grant usage on schema public to %I', r);
+      execute format('grant all on all tables in schema public to %I', r);
+      execute format('grant all on all sequences in schema public to %I', r);
+      execute format('grant all on all functions in schema public to %I', r);
+    end if;
+  end loop;
+end $$;
