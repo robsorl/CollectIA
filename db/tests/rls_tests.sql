@@ -308,11 +308,22 @@ begin
   select v_b, id, 'fr', 0, 2 from cards limit 1;  -- B veut la carte doublonée par A
   refresh materialized view trade_matches;
 
+  -- Non-vacuité (audit v8) : le jeu de test doit PROUVER qu'il produit le
+  -- match attendu dans la matview — sinon les assertions suivantes sur la
+  -- fonction passeraient même sans masquage.
+  assert exists (
+    select 1 from trade_matches
+    where me = v_a and other = v_b
+  ), 'S14 échoué : le jeu de test ne produit pas le match attendu dans la matview';
+
   perform set_config('request.jwt.claims',
     json_build_object('sub', v_a::text, 'role', 'authenticated')::text, false);
   execute 'set local role authenticated';
+  -- ciblé sur le couple (A, B) : sur le vrai projet, A peut avoir d'autres
+  -- matches légitimes avec des profils public/matches_only (audit v8).
   assert not exists (
     select 1 from get_trade_matches()
+    where me = v_a and other = v_b
   ), 'S14 échoué : le profil private de B est exposé dans le matching !';
 
   -- S14-suite : B passe en 'matches_only' — il accepte d'apparaître dans les
